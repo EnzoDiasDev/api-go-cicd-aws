@@ -64,6 +64,8 @@ jobs:
 
     - run: kubectl set image deployment/go-api go=enzodias31/go_ci3:${{ github.run_number }}
 
+    - run: kubectl rollout restart deployment/go-api
+
     - name: Espera os pods subirem
       run: kubectl rollout status deployment/go-api --timeout=5m
 
