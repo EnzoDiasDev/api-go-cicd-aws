@@ -63,3 +63,13 @@ jobs:
     - run: kubectl apply -f infra-api-go-cicd-aws-eks/go.yaml
 
     - run: kubectl set image deployment/go-api go=enzodias31/go_ci3:${{ github.run_number }}
+
+    - name: Espera os pods subirem
+      run: kubectl rollout status deployment/go-api --timeout=5m
+
+    - name: Diagnóstico
+      if: always()
+      run: |
+        kubectl get pods -o wide
+        kubectl describe pods -l nome=go | tail -n 40
+        kubectl logs -l nome=go --tail=30 --previous || kubectl logs -l nome=go --tail=30
