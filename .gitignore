@@ -1,0 +1,9 @@
+# Dados do PostgreSQL local (docker-compose). Nunca versionar: contém o banco inteiro.
+postgres-data/
+
+# Binário gerado pelo go build
+/main
+
+# Variáveis locais com segredos
+.env
+*.env
