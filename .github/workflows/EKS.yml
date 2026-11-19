@@ -3,38 +3,65 @@ name: Kubernetes
 on:
   workflow_call:
 
+env:
+  INFRA: infra-api-go-cicd-aws-eks/env/Homolog
+  # Trivy 0.76.2 fixado por digest: a imagem não muda mesmo se a tag for reescrita.
+  TRIVY_IMAGE: aquasec/trivy@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+
 jobs:
-  
+
   EKS:
     runs-on: ubuntu-latest
+    # id-token: write permite pedir o token OIDC que troca por credencial
+    # temporária da AWS. Não existe mais access key guardada no GitHub.
+    permissions:
+      contents: read
+      id-token: write
     steps:
 
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
+    - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
       with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        role-session-name: github-actions-eks
         aws-region: us-east-1
-    
+
     - run: git clone https://github.com/EnzoDiasDev/infra-api-go-cicd-aws-eks.git
 
+    # Varre o Terraform antes de aplicar. Achado CRITICAL ou HIGH sem exceção
+    # justificada interrompe o deploy.
+    - name: Varredura de IaC com Trivy
+      run: |
+        docker run --rm -v "$PWD/infra-api-go-cicd-aws-eks:/src:ro" -w /src "$TRIVY_IMAGE" config \
+          --severity CRITICAL,HIGH \
+          --exit-code 1 \
+          --ignorefile .trivyignore.yaml \
+          --config-check .trivy/checks \
+          --check-namespaces user \
+          --format table \
+          .
+
     - name: HashiCorp - Setup Terraform
-      uses: hashicorp/setup-terraform@v4
+      uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+      with:
+        # Sem o wrapper, "terraform output -raw" devolve só o valor, sem linhas
+        # extras, e dá para usar o resultado direto no shell.
+        terraform_wrapper: false
 
     - name: Terraform init
-      run: terraform -chdir=infra-api-go-cicd-aws-eks/env/Homolog init
+      run: terraform -chdir="$INFRA" init
 
     - name: Apply terraform
-      run: terraform -chdir=infra-api-go-cicd-aws-eks/env/Homolog apply -auto-approve
+      run: terraform -chdir="$INFRA" apply -auto-approve
 
-    - name: Terraform output 
-      run: echo "$(terraform -chdir=infra-api-go-cicd-aws-eks/env/Homolog output -raw IP_db)"
-      id: URL
+    - name: Terraform output
+      id: tf
+      run: echo "ip_db=$(terraform -chdir="$INFRA" output -raw IP_db)" >> "$GITHUB_OUTPUT"
 
     - name: Setup Kubectl
-      uses: azure/setup-kubectl@v4
+      uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4.0.1
 
     - run: aws sts get-caller-identity
 
@@ -43,16 +70,37 @@ jobs:
     - run: kubectl get svc
 
     - run: kubectl delete secret dbhost --ignore-not-found
-    - run: kubectl create secret generic dbhost --from-literal=HOST=${{ steps.URL.outputs.stdout }}
+    - run: kubectl create secret generic dbhost --from-literal=HOST=${{ steps.tf.outputs.ip_db }}
 
     - run: kubectl delete secret dbport --ignore-not-found
     - run: kubectl create secret generic dbport --from-literal=DBPORT=${{ secrets.DBPORT }}
 
-    - run: kubectl delete secret dbuser --ignore-not-found
-    - run: kubectl create secret generic dbuser --from-literal=USER=${{ secrets.DBUSER }}
+    # Usuário, senha do banco e chaves de API são gerados pelo Terraform e
+    # guardados no Secrets Manager. Aqui são lidos de lá, mascarados no log e
+    # gravados nos Secrets do Kubernetes. Nenhum desses valores está no código
+    # nem nos secrets do GitHub.
+    - name: Secrets do Kubernetes a partir do Secrets Manager
+      run: |
+        set -euo pipefail
+        DB_SECRET_ARN=$(terraform -chdir="$INFRA" output -raw db_secret_arn)
+        API_KEYS_SECRET_ARN=$(terraform -chdir="$INFRA" output -raw api_keys_secret_arn)
 
-    - run: kubectl delete secret dbpassword --ignore-not-found
-    - run: kubectl create secret generic dbpassword --from-literal=PASSWORD=${{ secrets.DBPASSWORD }}
+        DB_JSON=$(aws secretsmanager get-secret-value --secret-id "$DB_SECRET_ARN" --query SecretString --output text)
+        API_JSON=$(aws secretsmanager get-secret-value --secret-id "$API_KEYS_SECRET_ARN" --query SecretString --output text)
+
+        DB_USER=$(jq -r .username <<<"$DB_JSON")
+        DB_PASSWORD=$(jq -r .password <<<"$DB_JSON")
+        KEY_LEITURA=$(jq -r .API_KEY_LEITURA <<<"$API_JSON")
+        KEY_ADMIN=$(jq -r .API_KEY_ADMIN <<<"$API_JSON")
+        for valor in "$DB_PASSWORD" "$KEY_LEITURA" "$KEY_ADMIN"; do echo "::add-mask::$valor"; done
+
+        # "create --dry-run | apply" cria ou atualiza o Secret sem precisar apagar antes.
+        kubectl create secret generic dbuser --from-literal=USER="$DB_USER" --dry-run=client -o yaml | kubectl apply -f -
+        kubectl create secret generic dbpassword --from-literal=PASSWORD="$DB_PASSWORD" --dry-run=client -o yaml | kubectl apply -f -
+        kubectl create secret generic api-keys \
+          --from-literal=API_KEY_LEITURA="$KEY_LEITURA" \
+          --from-literal=API_KEY_ADMIN="$KEY_ADMIN" \
+          --dry-run=client -o yaml | kubectl apply -f -
 
     - run: kubectl delete secret dbname --ignore-not-found
     - run: kubectl create secret generic dbname --from-literal=DBNAME=${{ secrets.DBNAME }}

@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [ '*' ]
 
+# Permissão mínima por padrão. Só o job de deploy pede o token OIDC.
+permissions:
+  contents: read
+
+# Todas as actions estão fixadas pelo SHA do commit (o comentário mostra a
+# versão). Uma tag pode ser movida para outro código; um SHA não.
+
 jobs:
 
   test:
@@ -18,41 +25,77 @@ jobs:
       DBNAME: root
     strategy:
       matrix:
-        go_version: ['1.18', '1.17', '>=1.18']
         os: ['ubuntu-latest', 'ubuntu-22.04']
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+    # O go.mod exige Go 1.26. "stable" + check-latest pega sempre o último
+    # patch, que traz as correções de segurança da biblioteca padrão.
     - name: Set up Go
-      uses: actions/setup-go@v3
+      uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
       with:
-        go-version: ${{ matrix.go_version }}
-      
+        go-version: stable
+        check-latest: true
+
     - name: Build-DB
       run: docker compose build
-      
+
     - name: Create-DB
       run: docker compose up --wait -d
 
     - name: Test
-      run: go test -v main_test.go 
-    
+      run: go test -v ./...
+
     - name: Logs do banco
       if: failure()
       run: docker compose ps && docker compose logs postgres
-      
-  
-  build:
-    needs: test
+
+
+  seguranca:
+    name: Segurança (SAST e dependências)
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Set up Go
+      uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+      with:
+        go-version: stable
+        check-latest: true
+
+    # SAST: analisa o código-fonte atrás de padrões inseguros (SQL montado com
+    # string, erro ignorado, credencial no código, etc.). Falha se achar algo.
+    - name: SAST com gosec
+      run: |
+        go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0
+        gosec ./...
+
+    # SCA: procura vulnerabilidades conhecidas nas dependências e na biblioteca
+    # padrão, e só reprova as que o código realmente alcança.
+    - name: Vulnerabilidades com govulncheck
+      run: |
+        go install golang.org/x/vuln/cmd/govulncheck@v1.10.0
+        govulncheck ./...
+
+
+  build:
+    needs: [test, seguranca]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Set up Go
+      uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+      with:
+        go-version: stable
+        check-latest: true
+
     - name: Build
       run: go build -v main.go
-      
+
     - name: Upload a Build Artifact
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
     # Artifact name
         name: programa
@@ -70,19 +113,32 @@ jobs:
   #   uses: ./.github/workflows/EC2.yml
   #   secrets: inherit
 
+  # Ao reativar, mantenha o bloco "permissions": o login na AWS é por OIDC.
   # Deploy_ECS:
   #   needs: docker
+  #   permissions:
+  #     contents: read
+  #     id-token: write
   #   uses: ./.github/workflows/ECS.yml
   #   secrets: inherit
 
 
   # LoadTest:
   #   needs: docker
-  #   if: ${{ github.ref_name == 'Homolog' }}
+  #   if: ${{ github.event_name == 'push' && github.ref_name == 'Homolog' }}
+  #   permissions:
+  #     contents: read
+  #     id-token: write
   #   uses: ./.github/workflows/LoadTest.yml
   #   secrets: inherit
-  
+
+  # Deploy só em push na branch main. Antes rodava em push de qualquer branch,
+  # e qualquer push criava ou alterava infra paga.
   Deploy_EKS:
     needs: docker
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/EKS.yml
     secrets: inherit

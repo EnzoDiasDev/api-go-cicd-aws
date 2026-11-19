@@ -8,16 +8,16 @@ jobs:
   EC2:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Download a Build Artifact
-      uses: actions/download-artifact@v8
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
     # Artifact name
         name: programa
 
     - name: Deploy to Staging server
-      uses: easingthemes/ssh-deploy@main
+      uses: easingthemes/ssh-deploy@2cc5b27bf3029d0455dd5e09fe02633904031447 # v6.0.3 (antes: @main, uma branch que muda a qualquer momento)
       with:
         SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
@@ -33,7 +33,7 @@ jobs:
           echo $RSYNC_STDOUT
 
     - name: Execute remote SSH commands using password
-      uses: appleboy/ssh-action@v1
+      uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
       with:
         host: ${{ secrets.REMOTE_HOST }}
         username: ${{ secrets.REMOTE_USER }}
@@ -51,6 +51,8 @@ jobs:
           export DBNAME=${{ secrets.DBNAME }}
           export DBPORT=${{ secrets.DBPORT }}
           export PORT=8000
+          export API_KEY_LEITURA=${{ secrets.API_KEY_LEITURA }}
+          export API_KEY_ADMIN=${{ secrets.API_KEY_ADMIN }}
           echo "HOST=$HOST DBPORT=$DBPORT USER=$USER DBNAME=$DBNAME"
           chmod +x main
           nohup ./main > nohup.out 2> nohup.err < /dev/null &

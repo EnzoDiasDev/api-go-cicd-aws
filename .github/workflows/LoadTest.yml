@@ -3,50 +3,77 @@ name: Load Test
 on:
   workflow_call:
 
+env:
+  INFRA: infra-api-go-cicd-aws-ecs/env/Homolog
+  IMAGEM: enzodias31/go_ci3:${{ github.run_number }}
+  # Trivy 0.76.2 fixado por digest: a imagem não muda mesmo se a tag for reescrita.
+  TRIVY_IMAGE: aquasec/trivy@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+
 jobs:
-  
+
   loadtest:
     runs-on: ubuntu-latest
+    # id-token: write permite pedir o token OIDC que troca por credencial
+    # temporária da AWS. Não existe mais access key guardada no GitHub.
+    permissions:
+      contents: read
+      id-token: write
     steps:
 
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
+    - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
       with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        role-session-name: github-actions-loadtest
         aws-region: us-east-1
 
     - run: git clone https://github.com/EnzoDiasDev/infra-api-go-cicd-aws-ecs
 
+    # Varre o Terraform antes de aplicar. Achado CRITICAL ou HIGH sem exceção
+    # justificada interrompe o teste antes de criar qualquer recurso.
+    - name: Varredura de IaC com Trivy
+      run: |
+        docker run --rm -v "$PWD/infra-api-go-cicd-aws-ecs:/src:ro" -w /src "$TRIVY_IMAGE" config \
+          --severity CRITICAL,HIGH \
+          --exit-code 1 \
+          --ignorefile .trivyignore.yaml \
+          --config-check .trivy/checks \
+          --check-namespaces user \
+          --format table \
+          .
+
     - name: HashiCorp - Setup Terraform
-      uses: hashicorp/setup-terraform@v4
+      uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+      with:
+        # Sem o wrapper, "terraform output -raw" devolve só o valor.
+        terraform_wrapper: false
 
     - name: Terraform init
-      run: terraform -chdir=infra-api-go-cicd-aws-ecs/env/Homolog init
+      run: terraform -chdir="$INFRA" init
 
     - name: Destroy infra
-      run: terraform -chdir=infra-api-go-cicd-aws-ecs/env/Homolog destroy -auto-approve -var "imagem=enzodias31/go_ci3:${{ github.run_number }}"
+      run: terraform -chdir="$INFRA" destroy -auto-approve -var "imagem=$IMAGEM"
 
     - name: Apply terraform
-      run: terraform -chdir=infra-api-go-cicd-aws-ecs/env/Homolog apply -auto-approve -var "imagem=enzodias31/go_ci3:${{ github.run_number }}"
-    
+      run: terraform -chdir="$INFRA" apply -auto-approve -var "imagem=$IMAGEM"
+
     - name: Output terraform
-      run: echo "$(terraform -chdir=infra-api-go-cicd-aws-ecs/env/Homolog output -raw IP_alb)"
-      id: URL
+      id: tf
+      run: echo "ip_alb=$(terraform -chdir="$INFRA" output -raw IP_alb)" >> "$GITHUB_OUTPUT"
 
     - name: Setup python
-      uses: actions/setup-python@v7
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
       with:
-        python-version: '3.13' 
-    
+        python-version: '3.13'
+
     - name: Pip installer
-      uses: BSFishy/pip-action@v1
+      uses: BSFishy/pip-action@8f2d471d809dc20b6ada98c91910b6ae6243f318 # v1
       with:
         packages: |
           locust
-    
+
     - run: |
         echo "from locust import HttpUser, TaskSet, task, between" >> locustfile.py
         echo "" >> locustfile.py
@@ -58,10 +85,10 @@ jobs:
         echo "class WebsiteUser(HttpUser):" >> locustfile.py
         echo "  tasks = [UserTasks]" >> locustfile.py
         echo "  wait_time = between(1, 5)" >> locustfile.py
-    
+
     - name: Loadtest
-      run: aws ecs wait services-stable --cluster homolog --services Go-API ; sleep 30s ; locust -f locustfile.py --headless -u 10 -r 5 --run-time 60s -H http://${{ steps.URL.outputs.stdout }}
+      run: aws ecs wait services-stable --cluster homolog --services Go-API ; sleep 30s ; locust -f locustfile.py --headless -u 10 -r 5 --run-time 60s -H http://${{ steps.tf.outputs.ip_alb }}
 
     - name: Destroy infra (sempre, mesmo se o teste falhar)
       if: always()
-      run: terraform -chdir=infra-api-go-cicd-aws-ecs/env/Homolog destroy -auto-approve -var "imagem=enzodias31/go_ci3:${{ github.run_number }}"
+      run: terraform -chdir="$INFRA" destroy -auto-approve -var "imagem=$IMAGEM"

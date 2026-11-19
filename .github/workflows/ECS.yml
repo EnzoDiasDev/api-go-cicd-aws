@@ -7,13 +7,18 @@ jobs:
   
   ECS:
     runs-on: ubuntu-latest
+    # id-token: write permite pedir o token OIDC que troca por credencial
+    # temporária da AWS. Não existe mais access key guardada no GitHub.
+    permissions:
+      contents: read
+      id-token: write
     steps:
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
+    - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
       with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        role-session-name: github-actions-ecs
         aws-region: us-east-1
 
     - name: Obtendo o arquivo da tarefa
@@ -24,7 +29,7 @@ jobs:
 
     - name: Fill in the new image ID in the Amazon ECS task definition
       id: task-def
-      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      uses: aws-actions/amazon-ecs-render-task-definition@8d79160660ad39c402a16e5fc7cd2a32e8f7d6b7 # v1.9.1
       with:
         task-definition: task-definition.json
         container-name: Go
@@ -36,9 +41,11 @@ jobs:
           DBNAME=${{ secrets.DBNAME }}
           DBPORT=${{ secrets.DBPORT }}
           PORT=8000
+          API_KEY_LEITURA=${{ secrets.API_KEY_LEITURA }}
+          API_KEY_ADMIN=${{ secrets.API_KEY_ADMIN }}
 
     - name: Deploy Amazon ECS task definition
-      uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+      uses: aws-actions/amazon-ecs-deploy-task-definition@a00d4d57ac0de1a99b39fe469f3d898d38717c2b # v2.6.4
       with:
         task-definition: ${{ steps.task-def.outputs.task-definition }}
         service: Servico-API-Go
@@ -51,7 +58,7 @@ jobs:
 
     - name: Deploy Amazon ECS task definition
       if: ${{ env.REQUEST != 0 }}
-      uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+      uses: aws-actions/amazon-ecs-deploy-task-definition@a00d4d57ac0de1a99b39fe469f3d898d38717c2b # v2.6.4
       with:
         task-definition: task-definition.json.old
         service: Servico-API-Go

@@ -3,43 +3,55 @@ name: Docker
 on:
   workflow_call:
 
+permissions:
+  contents: read
+
+env:
+  IMAGEM: enzodias31/go_ci3:${{ github.run_number }}
+  # Trivy 0.76.2 fixado por digest: a imagem não muda mesmo se a tag for reescrita.
+  TRIVY_IMAGE: aquasec/trivy@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+
 jobs:
 
   docker:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-    - name: setup Docker Build
-      uses: docker/setup-buildx-action@v2.0.0
-      
     - name: Download a Build Artifact
-      uses: actions/download-artifact@v8
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
     # Artifact name
         name: programa
-      
+
+    # A imagem é construída localmente, varrida e só depois enviada. Se a
+    # varredura reprovar, nada chega ao Docker Hub.
+    - name: Build da imagem (sem push)
+      run: docker build -t "$IMAGEM" -f ./Dockerfile .
+
+    # Reprova se a imagem tiver vulnerabilidade CRITICAL ou HIGH que já tenha
+    # correção publicada (--ignore-unfixed). Cobre os pacotes do sistema base e
+    # o binário Go. A imagem é exportada para um .tar e lida pelo Trivy com
+    # --input, sem precisar dar acesso ao socket do Docker.
+    - name: Varredura da imagem com Trivy
+      run: |
+        docker save "$IMAGEM" -o imagem.tar
+        docker run --rm -v "$PWD/imagem.tar:/imagem.tar:ro" "$TRIVY_IMAGE" image \
+          --input /imagem.tar \
+          --severity CRITICAL,HIGH \
+          --ignore-unfixed \
+          --exit-code 1 \
+          --format table
+        rm -f imagem.tar
+
     - name: Docker Login
-  # You may pin to the exact commit or the version.
-  # uses: docker/login-action@49ed152c8eca782a232dede0303416e8f356c37b
-      uses: docker/login-action@v2.0.0
+      uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
       with:
     # Username used to log against the Docker registry
         username: ${{ secrets.USER_DOCKER_HUB }}
     # Password or personal access token used to log against the Docker registry
         password: ${{ secrets.PASSWORD_DOCKER_HUB }}
-        
-        
-    - name: Build and push Docker images
-  # You may pin to the exact commit or the version.
-  # uses: docker/build-push-action@e551b19e49efd4e98792db7592c17c09b89db8d8
-      uses: docker/build-push-action@v3.0.0
-      with:
-    # Build's context is the set of files located in the specified PATH or URL
-        context: .
-    # Path to the Dockerfile
-        file: ./Dockerfile
-    # Push is a shorthand for --output=type=registry
-        push: true
-    # List of tags
-        tags: enzodias31/go_ci3:${{ github.run_number }}
+
+    # Envia exatamente a imagem que foi varrida.
+    - name: Push da imagem
+      run: docker push "$IMAGEM"
