@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/guilhermeonrails/api-go-gin/database"
@@ -37,9 +38,23 @@ func CriarNovoAluno(c *gin.Context) {
 	c.JSON(http.StatusOK, aluno)
 }
 
+// idDaURL converte o :id da URL para inteiro positivo. Recusar qualquer coisa
+// que não seja número impede que o valor vire trecho de SQL dentro do GORM.
+func idDaURL(c *gin.Context) (int, bool) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"erro": "id inválido"})
+		return 0, false
+	}
+	return id, true
+}
+
 func BuscarAlunoPorID(c *gin.Context) {
 	var aluno models.Aluno
-	id := c.Params.ByName("id")
+	id, ok := idDaURL(c)
+	if !ok {
+		return
+	}
 	database.DB.First(&aluno, id)
 	if aluno.ID == 0 {
 		c.JSON(http.StatusNotFound, gin.H{
@@ -51,15 +66,26 @@ func BuscarAlunoPorID(c *gin.Context) {
 
 func DeletarAluno(c *gin.Context) {
 	var aluno models.Aluno
-	id := c.Params.ByName("id")
+	id, ok := idDaURL(c)
+	if !ok {
+		return
+	}
 	database.DB.Delete(&aluno, id)
 	c.JSON(http.StatusOK, gin.H{"data": "Aluno deletado com sucesso"})
 }
 
 func EditarAluno(c *gin.Context) {
 	var aluno models.Aluno
-	id := c.Params.ByName("id")
+	id, ok := idDaURL(c)
+	if !ok {
+		return
+	}
 	database.DB.First(&aluno, id)
+	if aluno.ID == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"Not Found": "Aluno não encontrado"})
+		return
+	}
 	if err := c.ShouldBindJSON(&aluno); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"erro": err.Error()})
