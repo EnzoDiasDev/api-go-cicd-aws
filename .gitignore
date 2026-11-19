@@ -4,6 +4,9 @@ postgres-data/
 # Binário gerado pelo go build
 /main
 
+# Relatórios gerados pelo scripts/sast.sh
+relatorio-sast/
+
 # Variáveis locais com segredos
 .env
 *.env

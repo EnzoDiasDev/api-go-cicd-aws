@@ -64,12 +64,19 @@ jobs:
         go-version: stable
         check-latest: true
 
-    # SAST: analisa o código-fonte atrás de padrões inseguros (SQL montado com
-    # string, erro ignorado, credencial no código, etc.). Falha se achar algo.
-    - name: SAST com gosec
-      run: |
-        go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0
-        gosec ./...
+    # SAST: o mesmo script que roda na máquina de quem desenvolve (go vet,
+    # gofmt, gosec e as regras próprias do projeto). Explicação em SAST.md.
+    - name: SAST (scripts/sast.sh)
+      run: ./scripts/sast.sh
+
+    # Guarda os relatórios mesmo quando o SAST reprova, para consulta.
+    - name: Relatórios do SAST
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: relatorio-sast
+        path: relatorio-sast/
+        if-no-files-found: ignore
 
     # SCA: procura vulnerabilidades conhecidas nas dependências e na biblioteca
     # padrão, e só reprova as que o código realmente alcança.
