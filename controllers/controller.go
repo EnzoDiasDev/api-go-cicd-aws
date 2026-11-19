@@ -5,9 +5,20 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/guilhermeonrails/api-go-gin/autenticacao"
 	"github.com/guilhermeonrails/api-go-gin/database"
 	"github.com/guilhermeonrails/api-go-gin/models"
 )
+
+// visaoDoAluno aplica a política de dados pessoais: só o perfil admin vê CPF
+// e RG completos. Qualquer outro perfil, inclusive a ausência de perfil,
+// recebe os documentos mascarados.
+func visaoDoAluno(c *gin.Context, aluno models.Aluno) models.Aluno {
+	if autenticacao.PerfilDe(c) == autenticacao.PerfilAdmin {
+		return aluno
+	}
+	return aluno.Mascarado()
+}
 
 func Saudacoes(c *gin.Context) {
 	nome := c.Params.ByName("nome")
@@ -19,6 +30,9 @@ func Saudacoes(c *gin.Context) {
 func TodosAlunos(c *gin.Context) {
 	var alunos []models.Aluno
 	database.DB.Find(&alunos)
+	for i := range alunos {
+		alunos[i] = visaoDoAluno(c, alunos[i])
+	}
 	c.JSON(200, alunos)
 }
 
@@ -61,16 +75,28 @@ func BuscarAlunoPorID(c *gin.Context) {
 			"Not Found": "Aluno não encontrado"})
 		return
 	}
-	c.JSON(http.StatusOK, aluno)
+	c.JSON(http.StatusOK, visaoDoAluno(c, aluno))
 }
 
+// DeletarAluno apaga o registro de verdade (Unscoped). Com o soft delete
+// padrão do GORM, o CPF e o RG continuariam guardados no banco depois da
+// exclusão, o que contraria a política de retenção de dados pessoais.
 func DeletarAluno(c *gin.Context) {
 	var aluno models.Aluno
 	id, ok := idDaURL(c)
 	if !ok {
 		return
 	}
-	database.DB.Delete(&aluno, id)
+	resultado := database.DB.Unscoped().Delete(&aluno, id)
+	if resultado.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"erro": "não foi possível apagar o aluno"})
+		return
+	}
+	if resultado.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"Not Found": "Aluno não encontrado"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"data": "Aluno deletado com sucesso"})
 }
 
@@ -110,7 +136,7 @@ func BuscaAlunoPorCPF(c *gin.Context) {
 			"Not Found": "Aluno não encontrado"})
 		return
 	}
-	c.JSON(http.StatusOK, aluno)
+	c.JSON(http.StatusOK, visaoDoAluno(c, aluno))
 }
 
 func ExibePaginaIndex(c *gin.Context) {

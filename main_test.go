@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/guilhermeonrails/api-go-gin/autenticacao"
 	"github.com/guilhermeonrails/api-go-gin/controllers"
 	"github.com/guilhermeonrails/api-go-gin/database"
 	"github.com/guilhermeonrails/api-go-gin/models"
@@ -18,9 +19,20 @@ import (
 
 var ID int
 
+// SetupDasRotasDeTeste devolve um router em que toda requisição já chega com o
+// perfil admin, como se tivesse passado pelo middleware de autenticação. A
+// autenticação em si é testada no pacote routes.
 func SetupDasRotasDeTeste() *gin.Engine {
+	return SetupDasRotasDeTesteComPerfil(autenticacao.PerfilAdmin)
+}
+
+func SetupDasRotasDeTesteComPerfil(perfil autenticacao.Perfil) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	rotas := gin.Default()
+	rotas.Use(func(c *gin.Context) {
+		autenticacao.DefinePerfil(c, perfil)
+		c.Next()
+	})
 	return rotas
 }
 
@@ -32,7 +44,37 @@ func CriaAlunoMock() {
 
 func DeletaAlunoMock() {
 	var aluno models.Aluno
-	database.DB.Delete(&aluno, ID)
+	database.DB.Unscoped().Delete(&aluno, ID)
+}
+
+func TestBuscaAlunoPorIDMascaraDocumentosParaPerfilLeitura(t *testing.T) {
+	database.ConectaComBancoDeDados()
+	CriaAlunoMock()
+	defer DeletaAlunoMock()
+	r := SetupDasRotasDeTesteComPerfil(autenticacao.PerfilLeitura)
+	r.GET("/alunos/:id", controllers.BuscarAlunoPorID)
+	req, _ := http.NewRequest("GET", "/alunos/"+strconv.Itoa(ID), nil)
+	resposta := httptest.NewRecorder()
+	r.ServeHTTP(resposta, req)
+	var alunoMock models.Aluno
+	json.Unmarshal(resposta.Body.Bytes(), &alunoMock)
+	assert.Equal(t, http.StatusOK, resposta.Code)
+	assert.Equal(t, "*********01", alunoMock.CPF)
+	assert.Equal(t, "*******89", alunoMock.RG)
+}
+
+func TestDeletaAlunoApagaORegistroDoBanco(t *testing.T) {
+	database.ConectaComBancoDeDados()
+	CriaAlunoMock()
+	r := SetupDasRotasDeTeste()
+	r.DELETE("/alunos/:id", controllers.DeletarAluno)
+	req, _ := http.NewRequest("DELETE", "/alunos/"+strconv.Itoa(ID), nil)
+	resposta := httptest.NewRecorder()
+	r.ServeHTTP(resposta, req)
+	assert.Equal(t, http.StatusOK, resposta.Code)
+	var total int64
+	database.DB.Unscoped().Model(&models.Aluno{}).Where("id = ?", ID).Count(&total)
+	assert.Equal(t, int64(0), total, "o registro não pode continuar no banco, nem como soft delete")
 }
 
 func TestVerificaStatusCodeDaSaudacaoComParametro(t *testing.T) {
